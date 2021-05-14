@@ -1,14 +1,9 @@
 use std::collections::HashMap;
 use std::path::Path;
-use std::{
-    sync::{Arc, Mutex},
-    vec,
-};
+use std::sync::{Arc, Mutex};
 
 use bio::io::fasta::IndexedReader;
 use clam::prelude::*;
-use ndarray::prelude::*;
-use rayon::prelude::*;
 
 struct FastaDataset {
     reader: Mutex<IndexedReader<std::fs::File>>,
@@ -29,7 +24,7 @@ impl std::fmt::Debug for FastaDataset {
 }
 
 impl FastaDataset {
-    fn new(fasta_path: &Path) -> std::result::Result<FastaDataset, String> {
+    pub fn new(fasta_path: &Path) -> std::result::Result<FastaDataset, String> {
         let mut reader = IndexedReader::from_file(&fasta_path).expect("could not read from given file.");
         let num_sequences = reader.index.sequences().len();
         let mut seq = vec![];
@@ -48,28 +43,28 @@ impl FastaDataset {
 }
 
 impl Dataset<u8, u64> for FastaDataset {
-    fn metric(&self) -> std::sync::Arc<(dyn Metric<u8, u64>)> {
+    fn metric(&self) -> Arc<(dyn Metric<u8, u64>)> {
         Arc::clone(&self.metric)
     }
 
-    fn ninstances(&self) -> usize {
+    fn cardinality(&self) -> usize {
         self.num_sequences
     }
 
-    fn shape(&self) -> &[usize] {
-        unimplemented!()
+    fn shape(&self) -> Vec<usize> {
+        vec![self.num_sequences, self.seq_len]
     }
 
     fn indices(&self) -> Indices {
         (0..self.num_sequences).collect()
     }
 
-    fn instance(&self, index: Index) -> ArrayView<u8, IxDyn> {
+    fn instance(&self, index: Index) -> Vec<u8> {
         let mut reader = self.reader.lock().unwrap();
         let mut seq = Vec::new();
-        reader.fetch_all_by_rid(index);
-        reader.read(&mut seq);
-        Array::from_vec(seq).into_dyn().view()
+        reader.fetch_all_by_rid(index).unwrap();
+        reader.read(&mut seq).unwrap();
+        seq
     }
 
     fn distance(&self, left: Index, right: Index) -> u64 {
@@ -90,9 +85,6 @@ impl Dataset<u8, u64> for FastaDataset {
 
 fn main() {
     let fasta_path = Path::new("/data/abd/silva/silva-SSU-Ref.fasta");
-    let mut reader = IndexedReader::from_file(&fasta_path).unwrap();
-    let mut seq0 = vec![];
-    reader.fetch_all_by_rid(0);
-    reader.read(&mut seq0);
-    println!("{:?}", seq0.len());
+    let reader = FastaDataset::new(fasta_path).unwrap();
+    println!("{:?}", reader.instance(0));
 }
