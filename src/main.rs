@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use bio::io::fasta::IndexedReader;
 use clam::prelude::*;
+use clam::CompressibleDataset;
 
 struct FastaDataset {
     reader: Mutex<IndexedReader<std::fs::File>>,
@@ -55,7 +56,7 @@ impl Dataset<u8, u64> for FastaDataset {
         vec![self.num_sequences, self.seq_len]
     }
 
-    fn indices(&self) -> Indices {
+    fn indices(&self) -> Vec<Index> {
         (0..self.num_sequences).collect()
     }
 
@@ -83,8 +84,18 @@ impl Dataset<u8, u64> for FastaDataset {
     }
 }
 
+impl CompressibleDataset<u8, u64> for FastaDataset {
+    fn as_dataset(&self) -> &dyn Dataset<u8, u64> {
+        self
+    }
+}
+
 fn main() {
     let fasta_path = Path::new("/data/abd/silva/silva-SSU-Ref.fasta");
     let reader = FastaDataset::new(fasta_path).unwrap();
-    println!("{:?}", reader.instance(0));
+    println!("{}, {}", reader.distance(0, 1), reader.encode(0, 1).unwrap().len());
+    println!("{}, {}", reader.distance(0, 2), reader.encode(0, 2).unwrap().len());
+    println!("{}, {}", reader.distance(0, 3), reader.encode(0, 3).unwrap().len());
+    println!("{}, {}", reader.distance(0, 4), reader.encode(0, 4).unwrap().len());
+    println!("{}, {}", reader.distance(0, 5), reader.encode(0, 5).unwrap().len());
 }
