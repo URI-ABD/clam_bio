@@ -1,13 +1,14 @@
-use std::cmp::min;
+use std::cmp::{min, max};
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs::File;
-use std::io::{BufReader, Seek, BufRead};
+use std::io::{BufRead, BufReader, Seek};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use clam::prelude::*;
 use clam::CompressibleDataset;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -22,10 +23,11 @@ struct FastaRecord {
 pub struct FastaDataset {
     path: OsString,
     records: Vec<FastaRecord>,
-    pub num_sequences: usize,
-    pub max_seq_len: usize,
+    num_sequences: usize,
+    max_seq_len: usize,
     metric: Arc<dyn Metric<u8, u64>>,
     cache: Mutex<HashMap<(usize, usize), u64>>,
+    batch_size: usize,
 }
 
 impl std::fmt::Debug for FastaDataset {
@@ -55,6 +57,8 @@ impl FastaDataset {
 
         let num_sequences = records.len();
         let max_seq_len = records.iter().map(|f| f.len).max().unwrap() as usize;
+        let batch_size = (num_sequences as f64).sqrt() as usize;
+        let batch_size = max(batch_size, 2_500);
 
         Ok(FastaDataset {
             path: fasta_path.as_os_str().to_owned(),
@@ -63,6 +67,7 @@ impl FastaDataset {
             max_seq_len,
             metric: Arc::new(clam::metric::Hamming),
             cache: Mutex::new(HashMap::new()),
+            batch_size,
         })
     }
 
@@ -122,7 +127,7 @@ impl FastaDataset {
         };
 
         reader.consume(bytes_to_read as usize);
-        
+
         assert!(bytes_to_read > 0);
         *line_offset += bytes_to_read;
         if *line_offset >= record.line_bytes {
@@ -130,6 +135,21 @@ impl FastaDataset {
         }
 
         Ok(bytes_to_keep)
+    }
+
+    fn calculate_distances(&self, left: &[Index], right: &[Index]) {
+        left.chunks(self.batch_size).for_each(|l_chunk| {
+            let l_instances: Vec<Vec<u8>> = l_chunk.iter().map(|&l| self.instance(l)).collect();
+            right.chunks(self.batch_size).for_each(|r_chunk| {
+                let r_instances: Vec<Vec<u8>> = r_chunk.iter().map(|&r| self.instance(r)).collect();
+                l_chunk.par_iter().zip(l_instances.par_iter()).for_each(|(&l, li)| {
+                    r_chunk.par_iter().zip(r_instances.par_iter()).filter(|(&r, _)| l != r).for_each(|(&r, ri)| {
+                        let key = if l < r { (l, r) } else { (r, l) };
+                        self.cache.lock().unwrap().entry(key).or_insert_with(|| self.metric.distance(li, ri));
+                    })
+                })
+            })
+        });
     }
 }
 
@@ -158,15 +178,32 @@ impl Dataset<u8, u64> for FastaDataset {
         if left == right {
             0
         } else {
-            let key = if left < right { (left, right) } else { (right, left) };
-            if !self.cache.lock().unwrap().contains_key(&key) {
-                let distance = self.metric.distance(&self.instance(left), &self.instance(right));
-                self.cache.lock().unwrap().insert(key, distance);
-                distance
-            } else {
-                *self.cache.lock().unwrap().get(&key).unwrap()
-            }
+            self.metric.distance(&self.instance(left), &self.instance(right))
         }
+    }
+
+    fn distances_from(&self, left: Index, right: &[Index]) -> Vec<u64> {
+        self.calculate_distances(&[left], right);
+        right
+            .par_iter()
+            .map(|&r| {
+                if left == r {
+                    0
+                } else {
+                    let key = if left < r { (left, r) } else { (r, left) };
+                    *self.cache.lock().unwrap().get(&key).unwrap()
+                }
+            })
+            .collect()
+    }
+
+    fn distances_among(&self, left: &[Index], right: &[Index]) -> Vec<Vec<u64>> {
+        self.calculate_distances(left, right);
+        left.par_iter().map(|&l| self.distances_from(l, right)).collect()
+    }
+
+    fn pairwise_distances(&self, indices: &[Index]) -> Vec<Vec<u64>> {
+        self.distances_among(indices, indices)
     }
 }
 
@@ -178,8 +215,8 @@ impl CompressibleDataset<u8, u64> for FastaDataset {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
     use std::path::Path;
+    use std::sync::Arc;
 
     use clam::prelude::*;
 
