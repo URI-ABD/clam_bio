@@ -1,10 +1,9 @@
-use std::cmp::{min, max};
-use std::collections::HashMap;
+use std::cmp::{max, min};
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Seek};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use clam::prelude::*;
 use clam::CompressibleDataset;
@@ -26,7 +25,6 @@ pub struct FastaDataset {
     num_sequences: usize,
     max_seq_len: usize,
     metric: Arc<dyn Metric<u8, u64>>,
-    cache: Mutex<HashMap<(usize, usize), u64>>,
     batch_size: usize,
 }
 
@@ -66,7 +64,6 @@ impl FastaDataset {
             num_sequences,
             max_seq_len,
             metric: Arc::new(clam::metric::Hamming),
-            cache: Mutex::new(HashMap::new()),
             batch_size,
         })
     }
@@ -137,19 +134,27 @@ impl FastaDataset {
         Ok(bytes_to_keep)
     }
 
-    fn calculate_distances(&self, left: &[Index], right: &[Index]) {
-        left.chunks(self.batch_size).for_each(|l_chunk| {
-            let l_instances: Vec<Vec<u8>> = l_chunk.iter().map(|&l| self.instance(l)).collect();
-            right.chunks(self.batch_size).for_each(|r_chunk| {
-                let r_instances: Vec<Vec<u8>> = r_chunk.iter().map(|&r| self.instance(r)).collect();
-                l_chunk.par_iter().zip(l_instances.par_iter()).for_each(|(&l, li)| {
-                    r_chunk.par_iter().zip(r_instances.par_iter()).filter(|(&r, _)| l != r).for_each(|(&r, ri)| {
-                        let key = if l < r { (l, r) } else { (r, l) };
-                        self.cache.lock().unwrap().entry(key).or_insert_with(|| self.metric.distance(li, ri));
-                    })
-                })
-            })
-        });
+    fn calculate_distances(&self, left: &[Index], right: &[Index]) -> Vec<Vec<u64>> {
+        println!("Calculating distances for {} vs {} points", left.len(), right.len());
+        let mut distances = Vec::new();
+        for (i, &l) in left.iter().enumerate() {
+            println!("Row {}", i);
+            let mut row = Vec::new();
+            let l_instance = self.instance(l);
+            for (j, right_chunk) in right.chunks(self.batch_size).enumerate() {
+                println!("Column chunk {}", j);
+                let right_instances: Vec<Vec<u8>> = right_chunk.par_iter().map(|&r| self.instance(r)).collect();
+                row.append(
+                    &mut right_chunk
+                        .par_iter()
+                        .zip(right_instances.par_iter())
+                        .map(|(&r, r_instance)| if l == r { 0 } else { self.metric.distance(&l_instance, r_instance) })
+                        .collect(),
+                );
+            }
+            distances.push(row);
+        }
+        distances
     }
 }
 
@@ -183,27 +188,15 @@ impl Dataset<u8, u64> for FastaDataset {
     }
 
     fn distances_from(&self, left: Index, right: &[Index]) -> Vec<u64> {
-        self.calculate_distances(&[left], right);
-        right
-            .par_iter()
-            .map(|&r| {
-                if left == r {
-                    0
-                } else {
-                    let key = if left < r { (left, r) } else { (r, left) };
-                    *self.cache.lock().unwrap().get(&key).unwrap()
-                }
-            })
-            .collect()
+        self.calculate_distances(&[left], right)[0].clone()
     }
 
     fn distances_among(&self, left: &[Index], right: &[Index]) -> Vec<Vec<u64>> {
-        self.calculate_distances(left, right);
-        left.par_iter().map(|&l| self.distances_from(l, right)).collect()
+        self.calculate_distances(left, right)
     }
 
     fn pairwise_distances(&self, indices: &[Index]) -> Vec<Vec<u64>> {
-        self.distances_among(indices, indices)
+        self.calculate_distances(indices, indices)
     }
 }
 
