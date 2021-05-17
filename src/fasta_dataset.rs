@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use clam::prelude::*;
 use clam::CompressibleDataset;
+use ndarray::prelude::*;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -134,7 +135,7 @@ impl FastaDataset {
         Ok(bytes_to_keep)
     }
 
-    fn calculate_distances(&self, left: &[Index], right: &[Index]) -> Vec<Vec<u64>> {
+    fn calculate_distances(&self, left: &[Index], right: &[Index]) -> Array2<u64> {
         println!("Calculating distances for {} vs {} points", left.len(), right.len());
         let mut distances = Vec::new();
         for (i, &l) in left.iter().enumerate() {
@@ -154,7 +155,11 @@ impl FastaDataset {
             }
             distances.push(row);
         }
-        distances
+        let distances: Array1<u64> = distances
+            .into_iter()
+            .flatten()
+            .collect();
+        distances.into_shape((left.len(), right.len())).unwrap()
     }
 }
 
@@ -187,15 +192,15 @@ impl Dataset<u8, u64> for FastaDataset {
         }
     }
 
-    fn distances_from(&self, left: Index, right: &[Index]) -> Vec<u64> {
-        self.calculate_distances(&[left], right)[0].clone()
+    fn distances_from(&self, left: Index, right: &[Index]) -> Array1<u64> {
+        self.calculate_distances(&[left], right).row(0).to_owned()
     }
 
-    fn distances_among(&self, left: &[Index], right: &[Index]) -> Vec<Vec<u64>> {
+    fn distances_among(&self, left: &[Index], right: &[Index]) -> Array2<u64> {
         self.calculate_distances(left, right)
     }
 
-    fn pairwise_distances(&self, indices: &[Index]) -> Vec<Vec<u64>> {
+    fn pairwise_distances(&self, indices: &[Index]) -> Array2<u64> {
         self.calculate_distances(indices, indices)
     }
 }
