@@ -80,10 +80,8 @@ impl FastaDataset {
     }
 
     pub fn get_subset_from_indices(&self, indices: &[Index]) -> Arc<RowMajor<u8, u64>> {
-        let mut sequences = Array2::zeros((indices.len(), self.max_seq_len));
-        for (&i, mut row) in indices.iter().zip(sequences.axis_iter_mut(Axis(0))) {
-            row.assign(&Array1::from_vec(self.read_sequence(i).unwrap()));
-        }
+        let sequences: Vec<u8> = indices.par_iter().map(|&i| self.read_sequence(i).unwrap()).flatten().collect();
+        let sequences: Array2<u8> = Array2::from_shape_vec((self.max_seq_len, indices.len()), sequences).unwrap();
         let subset = RowMajor::new(sequences, "hamming", true).unwrap();
         Arc::new(subset)
     }
@@ -110,6 +108,9 @@ impl FastaDataset {
         let mut seq = Vec::new();
         while bases_left > 0 {
             bases_left -= self.read_line(&mut reader, &record, &mut line_offset, bases_left, &mut seq)?;
+        }
+        if seq.len() < self.max_seq_len {
+            seq.extend(vec![0; self.max_seq_len - seq.len()].iter());
         }
         Ok(seq)
     }
@@ -155,14 +156,11 @@ impl FastaDataset {
     }
 
     fn calculate_distances(&self, left: &[Index], right: &[Index]) -> Array2<u64> {
-        println!("Calculating distances for {} vs {} points", left.len(), right.len());
         let mut distances = Vec::new();
         for (i, &l) in left.iter().enumerate() {
-            println!("Row {}", i);
             let mut row = Vec::new();
             let l_instance = self.instance(l);
             for (j, right_chunk) in right.chunks(self.batch_size).enumerate() {
-                println!("Column chunk {}", j);
                 let right_instances: Vec<Vec<u8>> = right_chunk.par_iter().map(|&r| self.instance(r)).collect();
                 row.append(
                     &mut right_chunk
