@@ -157,10 +157,10 @@ impl FastaDataset {
 
     fn calculate_distances(&self, left: &[Index], right: &[Index]) -> Array2<u64> {
         let mut distances = Vec::new();
-        for (i, &l) in left.iter().enumerate() {
+        for &l in left.iter() {
             let mut row = Vec::new();
             let l_instance = self.instance(l);
-            for (j, right_chunk) in right.chunks(self.batch_size).enumerate() {
+            for right_chunk in right.chunks(self.batch_size) {
                 let right_instances: Vec<Vec<u8>> = right_chunk.par_iter().map(|&r| self.instance(r)).collect();
                 row.append(
                     &mut right_chunk

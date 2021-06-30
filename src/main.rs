@@ -20,5 +20,5 @@ fn main() {
     let cakes_time = std::time::Instant::now();
     let cakes = Cakes::build(row_major_subset, Some(20), Some(100));
     println!("{:.2e} seconds to create cakes index.", cakes_time.elapsed().as_secs_f64());
-    println!("{:.2e}", cakes.diameter());
+    println!("tree diameter {:.2e}", cakes.diameter());
 }
