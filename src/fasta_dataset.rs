@@ -5,9 +5,11 @@ use std::io::{BufRead, BufReader, Seek};
 use std::path::Path;
 use std::sync::Arc;
 
+use clam::dataset::RowMajor;
 use clam::prelude::*;
 use clam::CompressibleDataset;
 use ndarray::prelude::*;
+use rand::seq::IteratorRandom;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -67,6 +69,23 @@ impl FastaDataset {
             metric: Arc::new(clam::metric::Hamming),
             batch_size,
         })
+    }
+
+    pub fn subsample_indices(&self, subsample_size: usize) -> Vec<Index> {
+        (0..self.num_sequences).choose_multiple(&mut rand::thread_rng(), subsample_size)
+    }
+
+    pub fn get_complement_indices(&self, indices: &[Index]) -> Vec<Index> {
+        (0..self.num_sequences).filter(|i| !indices.contains(i)).collect()
+    }
+
+    pub fn get_subset_from_indices(&self, indices: &[Index]) -> Arc<RowMajor<u8, u64>> {
+        let mut sequences = Array2::zeros((indices.len(), self.max_seq_len));
+        for (&i, mut row) in indices.iter().zip(sequences.axis_iter_mut(Axis(0))) {
+            row.assign(&Array1::from_vec(self.read_sequence(i).unwrap()));
+        }
+        let subset = RowMajor::new(sequences, "hamming", true).unwrap();
+        Arc::new(subset)
     }
 
     fn read_sequence(&self, index: Index) -> std::result::Result<Vec<u8>, String> {
@@ -155,10 +174,7 @@ impl FastaDataset {
             }
             distances.push(row);
         }
-        let distances: Array1<u64> = distances
-            .into_iter()
-            .flatten()
-            .collect();
+        let distances: Array1<u64> = distances.into_iter().flatten().collect();
         distances.into_shape((left.len(), right.len())).unwrap()
     }
 }
