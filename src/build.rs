@@ -120,33 +120,12 @@ mod tests {
 
         let unstacked = unstack_tree(root);
         assert_eq!(unstacked.len(), 1 + root.num_descendants());
+        assert_eq!(0, unstacked.iter().filter(|(_, c)| c.children.is_some()).count());
 
         let restacked = &restack_tree(unstacked);
-        let restacked_str = vec![
-            "Cluster {".to_string(),
-            format!("cardinality: {:?},", restacked.cardinality),
-            format!("num_indices: {:?},", restacked.indices.len()),
-            format!("argcenter: {:?},", restacked.argcenter),
-            format!("argradius: {:?},", restacked.argradius),
-            format!("radius: {:?},", restacked.radius),
-            format!("has children: {:?}", restacked.children.is_some()),
-            "}".to_string(),
-        ]
-        .join(" ");
-
-        let root_str = vec![
-            "Cluster {".to_string(),
-            format!("cardinality: {:?},", root.cardinality),
-            format!("num_indices: {:?},", root.indices.len()),
-            format!("argcenter: {:?},", root.argcenter),
-            format!("argradius: {:?},", root.argradius),
-            format!("radius: {:?},", root.radius),
-            format!("has children: {:?}", root.children.is_some()),
-            "}".to_string(),
-        ]
-        .join(" ");
-
-        assert_eq!(root_str, restacked_str);
+        assert_eq!(root.num_descendants(), restacked.num_descendants());
+        assert_eq!(root, restacked);
+        assert_eq!(root.flatten_tree(), restacked.flatten_tree());
 
         println!("{}", fasta_dataset.instance(0).len());
     }
