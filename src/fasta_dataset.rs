@@ -236,7 +236,7 @@ mod tests {
 
     #[test]
     fn test_fasta_index() {
-        let path = Path::new("/data/abd/silva/silva-SSU-Ref.fasta");
+        let path = Path::new("/home/nishaq/Documents/research/data/silva-SSU-Ref.fasta");
         let fasta_dataset: Arc<dyn Dataset<u8, u64>> = Arc::new(FastaDataset::new(path).unwrap());
 
         println!("{}", fasta_dataset.instance(0).len());
