@@ -32,16 +32,14 @@ pub fn unstack_tree<T: Number, U: Number>(root: &Arc<Cluster<T, U>>) -> TreeMap<
         .collect()
 }
 
-fn left_child_name<T: Number, U: Number>(cluster: &Arc<Cluster<T, U>>) -> BitVec<Lsb0, u8> {
-    let mut name = cluster.name.clone();
-    name.push(false);
-    name
-}
+fn child_names<T: Number, U: Number>(cluster: &Arc<Cluster<T, U>>) -> (BitVec<Lsb0, u8>, BitVec<Lsb0, u8>) {
+    let mut left_name = cluster.name.clone();
+    left_name.push(false);
 
-fn right_child_name<T: Number, U: Number>(cluster: &Arc<Cluster<T, U>>) -> BitVec<Lsb0, u8> {
-    let mut name = cluster.name.clone();
-    name.push(true);
-    name
+    let mut right_name = cluster.name.clone();
+    right_name.push(true);
+
+    (left_name, right_name)
 }
 
 /// Given an unstacked tree as a HashMap of Clusters, rebuild all
@@ -56,10 +54,9 @@ pub fn restack_tree<T: Number, U: Number>(tree: TreeMap<T, U>) -> Arc<Cluster<T,
         let (parents, mut ancestors): (TreeMap<T, U>, TreeMap<T, U>) = ancestors.drain().partition(|(_, v)| v.depth() == d);
 
         let parents: TreeMap<T, U> = parents
-            .iter()
-            .map(|(_, c)| {
-                let left_name = left_child_name(c);
-                let right_name = right_child_name(c);
+            .par_iter()
+            .map(|(_, cluster)| {
+                let (left_name, right_name) = child_names(cluster);
 
                 let children = if leaves.contains_key(&left_name) {
                     let left = Arc::clone(leaves.get(&left_name).unwrap());
@@ -70,23 +67,23 @@ pub fn restack_tree<T: Number, U: Number>(tree: TreeMap<T, U>) -> Arc<Cluster<T,
                 };
 
                 let cluster = Arc::new(Cluster {
-                    dataset: Arc::clone(&c.dataset),
-                    name: c.name.clone(),
-                    cardinality: c.cardinality,
-                    indices: c.indices.clone(),
+                    dataset: Arc::clone(&cluster.dataset),
+                    name: cluster.name.clone(),
+                    cardinality: cluster.cardinality,
+                    indices: cluster.indices.clone(),
                     children,
-                    argsamples: c.argsamples.clone(),
-                    argcenter: c.argcenter,
-                    argradius: c.argradius,
-                    radius: c.radius,
+                    argsamples: cluster.argsamples.clone(),
+                    argcenter: cluster.argcenter,
+                    argradius: cluster.argradius,
+                    radius: cluster.radius,
                 });
 
                 (cluster.name.clone(), cluster)
             })
             .collect();
 
-        parents.into_iter().for_each(|(k, v)| {
-            ancestors.insert(k, v);
+        parents.into_iter().for_each(|(name, cluster)| {
+            ancestors.insert(name, cluster);
         });
 
         tree = ancestors;
