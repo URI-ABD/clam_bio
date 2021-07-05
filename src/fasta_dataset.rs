@@ -71,6 +71,11 @@ impl FastaDataset {
         })
     }
 
+    // TODO:
+    pub fn as_arc_dataset(&self) -> Arc<dyn Dataset<u8, u64>> {
+        unimplemented!()
+    }
+
     pub fn subsample_indices(&self, subsample_size: usize) -> Vec<Index> {
         (0..self.num_sequences).choose_multiple(&mut rand::thread_rng(), subsample_size)
     }
