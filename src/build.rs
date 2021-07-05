@@ -124,7 +124,7 @@ pub fn build_cakes_from_fasta(
     min_cardinality: Option<usize>,
 ) -> Cakes<u8, u64> {
     let subset_indices = fasta_dataset.subsample_indices(subsample_size);
-    let complement_indices = fasta_dataset.get_complement_indices(&subset_indices);
+    let complement_indices = fasta_dataset.get_complement_indices(&subset_indices)[..subsample_size].to_vec();
 
     let row_major_subset = fasta_dataset.get_subset_from_indices(&subset_indices);
     let cakes = Cakes::build(row_major_subset, max_depth, min_cardinality);
@@ -134,8 +134,11 @@ pub fn build_cakes_from_fasta(
         tree.push(Arc::clone(&cakes.root));
         tree
     };
-    // Builds a matrix of values
-    //   
+    
+    // Build a sparse matrix of cluster insertions.
+    // | Sequence | Cluster 0                   | Cluster 1  |
+    // | seq_00   | None (Not added to cluster) | Some(dist) |
+    // | seq_01   | Some(dist)                  | None       |
     let insertion_paths: Vec<Vec<Option<u64>>> = complement_indices
         .par_iter()
         .map(|&index| {
@@ -157,7 +160,7 @@ pub fn build_cakes_from_fasta(
                 .collect()
         })
         .collect();
-
+    // Reduce the matrix to find the maximum
     let new_radii: Vec<(Index, u64)> = flat_tree
         .iter()
         .enumerate()
