@@ -96,13 +96,25 @@ pub fn restack_tree<T: Number, U: Number>(tree: TreeVec<T, U>) -> Arc<Cluster<T,
     Arc::clone(tree.get(&bitvec![Lsb0, u8; 1]).unwrap())
 }
 
-fn add_instance<T: Number, U: Number>(
-    cluster: &Cluster<T, U>,
-    fasta_dataset: &Arc<FastaDataset>,
-    complement_indices: &[Index],
-    index: Index,
-) -> RadiiMap<T, U> {
-    unimplemented!()
+// TODO: Measure if this is faster done in batches
+fn add_instance<T: Number, U: Number>(cluster: &Arc<Cluster<T, U>>, sequence: &[T], index: Index) -> RadiiMap<T, U> {
+    match &cluster.children {
+        Some((left, right)) => {
+            let left_distance = cluster.dataset.metric().distance(&left.center(), sequence);
+            let right_distance = cluster.dataset.metric().distance(&right.center(), sequence);
+
+            if left_distance <= right_distance {
+                let mut result = add_instance(left, sequence, index);
+                result.insert(Arc::clone(left), left_distance);
+                result
+            } else {
+                let mut result = add_instance(right, sequence, index);
+                result.insert(Arc::clone(right), right_distance);
+                result
+            }
+        }
+        None => HashMap::new(),
+    }
 }
 
 pub fn build_cakes_from_fasta(
@@ -112,7 +124,6 @@ pub fn build_cakes_from_fasta(
     min_cardinality: Option<usize>,
 ) -> Cakes<u8, u64> {
     let subset_indices = fasta_dataset.subsample_indices(subsample_size);
-    let complement_indices = fasta_dataset.get_complement_indices(&subset_indices);
 
     let row_major_subset = fasta_dataset.get_subset_from_indices(&subset_indices);
     let cakes = Cakes::build(row_major_subset, max_depth, min_cardinality);
@@ -125,9 +136,16 @@ pub fn build_cakes_from_fasta(
         .collect();
     cluster_radii.insert(Arc::clone(&cakes.root), cakes.root.radius);
 
-    let new_radii: Vec<RadiiMap<u8, u64>> = complement_indices
+    let new_radii: Vec<RadiiMap<u8, u64>> = fasta_dataset
+        .get_complement_indices(&subset_indices)
         .par_iter()
-        .map(|&index| add_instance(&cakes.root, fasta_dataset, &complement_indices, index))
+        .map(|&index| {
+            let sequence = fasta_dataset.instance(index);
+            let mut radii_map = add_instance(&cakes.root, &sequence, index);
+            let distance = cakes.root.dataset.metric().distance(&cakes.root.center(), &sequence);
+            radii_map.insert(Arc::clone(&cakes.root), distance);
+            radii_map
+        })
         .collect();
     new_radii.into_iter().for_each(|radii_map| {
         radii_map.into_iter().for_each(|(cluster, radius)| {
