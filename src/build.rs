@@ -155,7 +155,7 @@ pub fn build_cakes_from_fasta(
         })
     });
 
-    let dataset = fasta_dataset.as_arc_dataset();
+    let dataset = Arc::clone(fasta_dataset).as_arc_dataset();
 
     let unstacked_tree = cluster_radii
         .into_par_iter()

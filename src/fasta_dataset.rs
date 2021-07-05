@@ -71,9 +71,8 @@ impl FastaDataset {
         })
     }
 
-    // TODO:
-    pub fn as_arc_dataset(&self) -> Arc<dyn Dataset<u8, u64>> {
-        unimplemented!()
+    pub fn as_arc_dataset(self: Arc<Self>) -> Arc<dyn Dataset<u8, u64>> {
+        self
     }
 
     pub fn subsample_indices(&self, subsample_size: usize) -> Vec<Index> {
