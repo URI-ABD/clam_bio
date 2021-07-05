@@ -93,6 +93,31 @@ pub fn restack_tree<T: Number, U: Number>(tree: TreeMap<T, U>) -> Arc<Cluster<T,
     Arc::clone(tree.get(&bitvec![Lsb0, u8; 1]).unwrap())
 }
 
+
+/// For every cluster in the tree, replace the clusters' dataset with the given dataset.
+pub fn replace_dataset_in_tree<T: Number, U: Number>(root: Arc<Cluster<T, U>>, dataset: Arc<dyn Dataset<T, U>>) -> Arc<Cluster<T, U>> {
+    let children = match &root.children {
+        Some((left, right)) => {
+            let left = replace_dataset_in_tree(Arc::clone(left), Arc::clone(&dataset));
+            let right = replace_dataset_in_tree(Arc::clone(right), Arc::clone(&dataset));
+            Some((left, right))
+        },
+        None => None,
+    };
+
+    Arc::new(Cluster {
+        dataset,
+        name: root.name.clone(),
+        cardinality: root.cardinality,
+        indices: root.indices.clone(),
+        argsamples: root.argsamples.clone(),
+        argcenter: root.argcenter,
+        argradius: root.argradius,
+        radius: root.radius,
+        children,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
