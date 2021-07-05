@@ -10,7 +10,7 @@ use crate::FastaDataset;
 
 type TreeMap<T, U> = HashMap<BitVec<Lsb0, u8>, Arc<Cluster<T, U>>>;
 type TreeVec<T, U> = Vec<Arc<Cluster<T, U>>>;
-type RadiiMap<T, U> = HashMap<Arc<Cluster<T, U>>, U>;
+type RadiusMap<T, U> = HashMap<Arc<Cluster<T, U>>, U>;
 
 /// Given a Cluster, unstack the tree into a HashSet of Clusters
 /// and erase all parent-child relationships.
@@ -97,18 +97,18 @@ pub fn restack_tree<T: Number, U: Number>(tree: TreeVec<T, U>) -> Arc<Cluster<T,
 }
 
 // TODO: Measure if this is faster done in batches
-fn add_instance<T: Number, U: Number>(cluster: &Arc<Cluster<T, U>>, sequence: &[T], index: Index) -> RadiiMap<T, U> {
+fn add_instance<T: Number, U: Number>(cluster: &Arc<Cluster<T, U>>, sequence: &[T]) -> RadiusMap<T, U> {
     match &cluster.children {
         Some((left, right)) => {
             let left_distance = cluster.dataset.metric().distance(&left.center(), sequence);
             let right_distance = cluster.dataset.metric().distance(&right.center(), sequence);
 
             if left_distance <= right_distance {
-                let mut result = add_instance(left, sequence, index);
+                let mut result = add_instance(left, sequence);
                 result.insert(Arc::clone(left), left_distance);
                 result
             } else {
-                let mut result = add_instance(right, sequence, index);
+                let mut result = add_instance(right, sequence);
                 result.insert(Arc::clone(right), right_distance);
                 result
             }
@@ -124,50 +124,102 @@ pub fn build_cakes_from_fasta(
     min_cardinality: Option<usize>,
 ) -> Cakes<u8, u64> {
     let subset_indices = fasta_dataset.subsample_indices(subsample_size);
+    let complement_indices = fasta_dataset.get_complement_indices(&subset_indices);
 
     let row_major_subset = fasta_dataset.get_subset_from_indices(&subset_indices);
     let cakes = Cakes::build(row_major_subset, max_depth, min_cardinality);
 
-    let mut cluster_radii: RadiiMap<u8, u64> = cakes
-        .root
-        .flatten_tree()
-        .par_iter()
-        .map(|cluster| (Arc::clone(cluster), cluster.radius))
-        .collect();
-    cluster_radii.insert(Arc::clone(&cakes.root), cakes.root.radius);
-
-    let new_radii: Vec<RadiiMap<u8, u64>> = fasta_dataset
-        .get_complement_indices(&subset_indices)
+    let flat_tree = {
+        let mut tree = cakes.root.flatten_tree();
+        tree.push(Arc::clone(&cakes.root));
+        tree
+    };
+    // Builds a matrix of values
+    //   
+    let insertion_paths: Vec<Vec<Option<u64>>> = complement_indices
         .par_iter()
         .map(|&index| {
             let sequence = fasta_dataset.instance(index);
-            let mut radii_map = add_instance(&cakes.root, &sequence, index);
+
+            let mut insertion_path = add_instance(&cakes.root, &sequence);
             let distance = cakes.root.dataset.metric().distance(&cakes.root.center(), &sequence);
-            radii_map.insert(Arc::clone(&cakes.root), distance);
-            radii_map
+            insertion_path.insert(Arc::clone(&cakes.root), distance);
+
+            flat_tree
+                .par_iter()
+                .map(|cluster| {
+                    if insertion_path.contains_key(cluster) {
+                        Some(*insertion_path.get(cluster).unwrap())
+                    } else {
+                        None
+                    }
+                })
+                .collect()
         })
         .collect();
-    new_radii.into_iter().for_each(|radii_map| {
-        radii_map.into_iter().for_each(|(cluster, radius)| {
-            if radius > *cluster_radii.get(&cluster).unwrap() {
-                cluster_radii.insert(cluster, radius);
-            }
+
+    let new_radii: Vec<(Index, u64)> = flat_tree
+        .iter()
+        .enumerate()
+        .map(|(i, _)| {
+            let temp: Vec<u64> = insertion_paths
+                .iter()
+                .map(|inner| {
+                    let distance = inner[i];
+                    if distance.is_some() {
+                        distance.unwrap()
+                    } else {
+                        0
+                    }
+                })
+                .collect();
+            clam::utils::argmax(&temp)
         })
-    });
+        .collect();
+
+    let insertions: Vec<Vec<Index>> = flat_tree
+        .iter()
+        .enumerate()
+        .map(|(i, _)| {
+            let temp: Vec<Option<Index>> = insertion_paths
+                .iter()
+                .map(|inner| {
+                    let distance = inner[i];
+                    if distance.is_some() {
+                        Some(i)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            temp.iter().filter(|&&v| v.is_some()).map(|v| v.unwrap()).collect()
+        })
+        .collect();
 
     let dataset = Arc::clone(fasta_dataset).as_arc_dataset();
 
-    let unstacked_tree = cluster_radii
-        .into_par_iter()
-        .map(|(cluster, radius)| {
+    let unstacked_tree = flat_tree
+        .into_iter()
+        .zip(new_radii.into_iter())
+        .zip(insertions.into_iter())
+        .map(|((cluster, (new_argradius, new_radius)), mut inserted_indices)| {
+            let mut indices = cluster.indices.clone();
+            indices.append(&mut inserted_indices);
+
+            let (argradius, radius) = if new_radius > cluster.radius {
+                (new_argradius, new_radius)
+            } else {
+                (cluster.argradius, cluster.radius)
+            };
+
             Arc::new(Cluster {
                 dataset: Arc::clone(&dataset),
                 name: cluster.name.clone(),
-                cardinality: cluster.cardinality,
-                indices: cluster.indices.clone(),
+                cardinality: indices.len(),
+                indices,
                 argsamples: cluster.argsamples.clone(),
                 argcenter: cluster.argcenter,
-                argradius: cluster.argradius,
+                argradius,
                 radius,
                 children: None,
             })
