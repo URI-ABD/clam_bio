@@ -189,7 +189,7 @@ mod tests {
     use clam::prelude::*;
     use clam::Cakes;
 
-    use crate::build::{restack_tree, unstack_tree};
+    use crate::build::*;
     use crate::FastaDataset;
 
     #[test]
@@ -213,5 +213,18 @@ mod tests {
         assert_eq!(root.flatten_tree(), restacked.flatten_tree());
 
         println!("{}", fasta_dataset.instance(0).len());
+    }
+
+    #[test]
+    fn test_cakes_from_subsample() {
+        let path = Path::new("/home/nishaq/Documents/research/data/silva-SSU-Ref.fasta");
+        let fasta_dataset = Arc::new(FastaDataset::new(path).unwrap());
+        let subsample_size = 1024;
+
+        let start_time = std::time::Instant::now();
+        let cakes = build_cakes_from_fasta(&fasta_dataset, subsample_size, Some(8), None);
+        println!("{:.2e} seconds to create cakes from subset.", start_time.elapsed().as_secs_f64());
+
+        assert_eq!(cakes.root.cardinality, 2 * subsample_size);
     }
 }

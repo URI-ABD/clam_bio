@@ -75,6 +75,7 @@ impl FastaDataset {
         self
     }
 
+    // TODO: Merge these next two methods and use the permute crate
     pub fn subsample_indices(&self, subsample_size: usize) -> Vec<Index> {
         (0..self.num_sequences).choose_multiple(&mut rand::thread_rng(), subsample_size)
     }
