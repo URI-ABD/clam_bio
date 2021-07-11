@@ -12,29 +12,6 @@ type TreeMap<T, U> = HashMap<BitVec<Lsb0, u8>, Arc<Cluster<T, U>>>;
 type TreeVec<T, U> = Vec<Arc<Cluster<T, U>>>;
 type RadiusMap<T, U> = HashMap<Arc<Cluster<T, U>>, U>;
 
-/// Given a Cluster, unstack the tree into a HashSet of Clusters
-/// and erase all parent-child relationships.
-pub fn unstack_tree<T: Number, U: Number>(root: &Arc<Cluster<T, U>>) -> TreeVec<T, U> {
-    let mut tree = root.flatten_tree();
-    tree.push(Arc::clone(root));
-
-    tree.par_iter()
-        .map(|c| {
-            Arc::new(Cluster {
-                dataset: Arc::clone(&c.dataset),
-                name: c.name.clone(),
-                cardinality: c.cardinality,
-                indices: c.indices.clone(),
-                children: None,
-                argsamples: c.argsamples.clone(),
-                argcenter: c.argcenter,
-                argradius: c.argradius,
-                radius: c.radius,
-            })
-        })
-        .collect()
-}
-
 fn child_names<T: Number, U: Number>(cluster: &Arc<Cluster<T, U>>) -> (BitVec<Lsb0, u8>, BitVec<Lsb0, u8>) {
     let mut left_name = cluster.name.clone();
     left_name.push(false);
@@ -61,19 +38,23 @@ pub fn restack_tree<T: Number, U: Number>(tree: TreeVec<T, U>) -> Arc<Cluster<T,
             .map(|(_, cluster)| {
                 let (left_name, right_name) = child_names(cluster);
 
-                let children = if leaves.contains_key(&left_name) {
+                let (children, indices) = if leaves.contains_key(&left_name) {
                     let left = Arc::clone(leaves.get(&left_name).unwrap());
                     let right = Arc::clone(leaves.get(&right_name).unwrap());
-                    Some((left, right))
+
+                    let mut indices = left.indices.clone();
+                    indices.append(&mut right.indices.clone());
+
+                    (Some((left, right)), indices)
                 } else {
-                    None
+                    (None, cluster.indices.clone())
                 };
 
                 let cluster = Arc::new(Cluster {
                     dataset: Arc::clone(&cluster.dataset),
                     name: cluster.name.clone(),
-                    cardinality: cluster.cardinality,
-                    indices: cluster.indices.clone(),
+                    cardinality: indices.len(),
+                    indices,
                     children,
                     argsamples: cluster.argsamples.clone(),
                     argcenter: cluster.argcenter,
@@ -97,23 +78,19 @@ pub fn restack_tree<T: Number, U: Number>(tree: TreeVec<T, U>) -> Arc<Cluster<T,
 }
 
 // TODO: Measure if this is faster done in batches
-fn add_instance<T: Number, U: Number>(cluster: &Arc<Cluster<T, U>>, sequence: &[T]) -> RadiusMap<T, U> {
+fn add_instance<T: Number, U: Number>(cluster: &Arc<Cluster<T, U>>, sequence: &[T], distance: U) -> RadiusMap<T, U> {
     match &cluster.children {
         Some((left, right)) => {
             let left_distance = cluster.dataset.metric().distance(&left.center(), sequence);
             let right_distance = cluster.dataset.metric().distance(&right.center(), sequence);
 
             if left_distance <= right_distance {
-                let mut result = add_instance(left, sequence);
-                result.insert(Arc::clone(left), left_distance);
-                result
+                add_instance(left, sequence, left_distance)
             } else {
-                let mut result = add_instance(right, sequence);
-                result.insert(Arc::clone(right), right_distance);
-                result
+                add_instance(right, sequence, right_distance)
             }
         }
-        None => HashMap::new(),
+        None => [(Arc::clone(cluster), distance)].iter().cloned().collect(),
     }
 }
 
@@ -124,9 +101,12 @@ pub fn build_cakes_from_fasta(
     min_cardinality: Option<usize>,
 ) -> Cakes<u8, u64> {
     let subset_indices = fasta_dataset.subsample_indices(subsample_size);
+
+    // TODO: Add from complement in batches
     let complement_indices = fasta_dataset.get_complement_indices(&subset_indices)[..subsample_size].to_vec();
 
     let row_major_subset = fasta_dataset.get_subset_from_indices(&subset_indices);
+
     let cakes = Cakes::build(row_major_subset, max_depth, min_cardinality);
 
     let flat_tree = {
@@ -134,7 +114,7 @@ pub fn build_cakes_from_fasta(
         tree.push(Arc::clone(&cakes.root));
         tree
     };
-    
+
     // Build a sparse matrix of cluster insertions.
     // | Sequence | Cluster 0                   | Cluster 1  |
     // | seq_00   | None (Not added to cluster) | Some(dist) |
@@ -143,10 +123,8 @@ pub fn build_cakes_from_fasta(
         .par_iter()
         .map(|&index| {
             let sequence = fasta_dataset.instance(index);
-
-            let mut insertion_path = add_instance(&cakes.root, &sequence);
             let distance = cakes.root.dataset.metric().distance(&cakes.root.center(), &sequence);
-            insertion_path.insert(Arc::clone(&cakes.root), distance);
+            let insertion_path = add_instance(&cakes.root, &sequence, distance);
 
             flat_tree
                 .par_iter()
@@ -160,59 +138,57 @@ pub fn build_cakes_from_fasta(
                 .collect()
         })
         .collect();
+
     // Reduce the matrix to find the maximum
-    let new_radii: Vec<(Index, u64)> = flat_tree
-        .iter()
+    let new_radii: Vec<_> = flat_tree
+        .par_iter()
         .enumerate()
         .map(|(i, _)| {
-            let temp: Vec<u64> = insertion_paths
-                .iter()
-                .map(|inner| {
-                    let distance = inner[i];
-                    if distance.is_some() {
-                        distance.unwrap()
-                    } else {
-                        0
-                    }
-                })
-                .collect();
+            let temp: Vec<_> = insertion_paths.par_iter().map(|inner| inner[i].unwrap_or(0)).collect();
             clam::utils::argmax(&temp)
         })
         .collect();
 
-    let insertions: Vec<Vec<Index>> = flat_tree
-        .iter()
+    let insertions: Vec<Vec<usize>> = flat_tree
+        .par_iter()
         .enumerate()
         .map(|(i, _)| {
-            let temp: Vec<Option<Index>> = insertion_paths
-                .iter()
-                .map(|inner| {
+            let temp: Vec<Option<usize>> = insertion_paths
+                .par_iter()
+                .enumerate()
+                .map(|(j, inner)| {
                     let distance = inner[i];
                     if distance.is_some() {
-                        Some(i)
+                        Some(j)
                     } else {
                         None
                     }
                 })
                 .collect();
-            temp.iter().filter(|&&v| v.is_some()).map(|v| v.unwrap()).collect()
+            temp.into_par_iter().filter(|&v| v.is_some()).map(|v| v.unwrap()).collect()
         })
         .collect();
 
     let dataset = Arc::clone(fasta_dataset).as_arc_dataset();
 
     let unstacked_tree = flat_tree
-        .into_iter()
-        .zip(new_radii.into_iter())
-        .zip(insertions.into_iter())
-        .map(|((cluster, (new_argradius, new_radius)), mut inserted_indices)| {
-            let mut indices = cluster.indices.clone();
-            indices.append(&mut inserted_indices);
+        .into_par_iter()
+        .zip(new_radii.into_par_iter())
+        .zip(insertions.into_par_iter())
+        .map(|((cluster, (argradius, radius)), indices)| {
+            let indices = {
+                let mut indices: Vec<_> = indices.into_iter().map(|i| complement_indices[i]).collect();
+                indices.extend(cluster.indices.iter().map(|&i| subset_indices[i]));
+                indices
+            };
 
-            let (argradius, radius) = if new_radius > cluster.radius {
-                (new_argradius, new_radius)
+            let argsamples: Vec<_> = cluster.argsamples.iter().map(|&i| subset_indices[i]).collect();
+            let argcenter = subset_indices[cluster.argcenter];
+
+            let (argradius, radius) = if radius > cluster.radius {
+                (complement_indices[argradius], radius)
             } else {
-                (cluster.argradius, cluster.radius)
+                (subset_indices[cluster.argradius], cluster.radius)
             };
 
             Arc::new(Cluster {
@@ -220,8 +196,8 @@ pub fn build_cakes_from_fasta(
                 name: cluster.name.clone(),
                 cardinality: indices.len(),
                 indices,
-                argsamples: cluster.argsamples.clone(),
-                argcenter: cluster.argcenter,
+                argsamples,
+                argcenter,
                 argradius,
                 radius,
                 children: None,
@@ -241,34 +217,8 @@ mod tests {
     use std::path::Path;
     use std::sync::Arc;
 
-    use clam::prelude::*;
-    use clam::Cakes;
-
     use crate::build::*;
     use crate::FastaDataset;
-
-    #[test]
-    fn test_stack_unstack() {
-        let path = Path::new("/home/nishaq/Documents/research/data/silva-SSU-Ref.fasta");
-        let fasta_dataset = Arc::new(FastaDataset::new(path).unwrap());
-
-        let subset_indices = fasta_dataset.subsample_indices(1024);
-        let row_major_subset = fasta_dataset.get_subset_from_indices(&subset_indices);
-
-        let cakes = Cakes::build(row_major_subset, Some(8), None);
-        let root = &cakes.root;
-
-        let unstacked = unstack_tree(root);
-        assert_eq!(unstacked.len(), 1 + root.num_descendants());
-        assert_eq!(0, unstacked.iter().filter(|c| c.children.is_some()).count());
-
-        let restacked = &restack_tree(unstacked);
-        assert_eq!(root.num_descendants(), restacked.num_descendants());
-        assert_eq!(root, restacked);
-        assert_eq!(root.flatten_tree(), restacked.flatten_tree());
-
-        println!("{}", fasta_dataset.instance(0).len());
-    }
 
     #[test]
     fn test_cakes_from_subsample() {

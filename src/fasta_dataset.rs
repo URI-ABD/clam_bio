@@ -86,7 +86,7 @@ impl FastaDataset {
 
     pub fn get_subset_from_indices(&self, indices: &[Index]) -> Arc<RowMajor<u8, u64>> {
         let sequences: Vec<u8> = indices.par_iter().map(|&i| self.read_sequence(i).unwrap()).flatten().collect();
-        let sequences: Array2<u8> = Array2::from_shape_vec((self.max_seq_len, indices.len()), sequences).unwrap();
+        let sequences: Array2<u8> = Array2::from_shape_vec((indices.len(), self.max_seq_len), sequences).unwrap(); // EPIC BUG!
         let subset = RowMajor::new(sequences, "hamming", true).unwrap();
         Arc::new(subset)
     }
