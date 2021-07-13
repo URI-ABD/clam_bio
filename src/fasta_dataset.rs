@@ -28,6 +28,7 @@ pub struct FastaDataset {
     num_sequences: usize,
     max_seq_len: usize,
     metric: Arc<dyn Metric<u8, u64>>,
+    metric_name: &'static str,
     batch_size: usize,
 }
 
@@ -67,6 +68,7 @@ impl FastaDataset {
             num_sequences,
             max_seq_len,
             metric: Arc::new(clam::metric::Hamming),
+            metric_name: "hamming",
             batch_size,
         })
     }
@@ -85,8 +87,7 @@ impl FastaDataset {
     }
 
     pub fn get_subset_from_indices(&self, indices: &[Index]) -> Arc<RowMajor<u8, u64>> {
-        let sequences: Vec<u8> = indices.par_iter().map(|&i| self.read_sequence(i).unwrap()).flatten().collect();
-        let sequences: Array2<u8> = Array2::from_shape_vec((indices.len(), self.max_seq_len), sequences).unwrap(); // EPIC BUG!
+        let sequences: Vec<Vec<u8>> = indices.par_iter().map(|&i| self.read_sequence(i).unwrap()).collect();
         let subset = RowMajor::new(sequences, "hamming", true).unwrap();
         Arc::new(subset)
     }
@@ -166,7 +167,7 @@ impl FastaDataset {
             let mut row = Vec::new();
             let l_instance = self.instance(l);
             for right_chunk in right.chunks(self.batch_size) {
-                let right_instances: Vec<Vec<u8>> = right_chunk.par_iter().map(|&r| self.instance(r)).collect();
+                let right_instances: Vec<Vec<u8>> = right_chunk.par_iter().map(|&r| self.instance(r).to_vec()).collect();
                 row.append(
                     &mut right_chunk
                         .par_iter()
@@ -187,12 +188,16 @@ impl Dataset<u8, u64> for FastaDataset {
         Arc::clone(&self.metric)
     }
 
+    fn metric_name(&self) -> String {
+        self.metric_name.to_string()
+    }
+
     fn cardinality(&self) -> usize {
         self.num_sequences
     }
 
-    fn shape(&self) -> Vec<usize> {
-        vec![self.num_sequences, self.max_seq_len]
+    fn dimensionality(&self) -> usize {
+        self.max_seq_len
     }
 
     fn indices(&self) -> Vec<Index> {
@@ -236,6 +241,7 @@ mod tests {
     use std::sync::Arc;
 
     use clam::prelude::*;
+    use clam::Cakes;
 
     use super::FastaDataset;
 
@@ -245,5 +251,18 @@ mod tests {
         let fasta_dataset: Arc<dyn Dataset<u8, u64>> = Arc::new(FastaDataset::new(path).unwrap());
 
         println!("{}", fasta_dataset.instance(0).len());
+    }
+
+    #[test]
+    fn test_cakes_from_subsample() {
+        let path = Path::new("/home/nishaq/Documents/research/data/silva-SSU-Ref.fasta");
+        let fasta_dataset = Arc::new(FastaDataset::new(path).unwrap());
+        let subsample_size = 1024;
+
+        let start_time = std::time::Instant::now();
+        let cakes = Cakes::build_in_batches(fasta_dataset, Some(0.5), Some(8), Some(100));
+        println!("{:.2e} seconds to create cakes from subset.", start_time.elapsed().as_secs_f64());
+
+        assert_eq!(cakes.root.cardinality, 2 * subsample_size);
     }
 }

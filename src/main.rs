@@ -1,19 +1,31 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use clam_bio::build::build_cakes_from_fasta;
+use clam::{Cakes, Dataset};
+
 use clam_bio::FastaDataset;
 
 fn main() {
-    let path = Path::new("/home/nishaq/Documents/research/data/silva-SSU-Ref.fasta");
-    let fasta_dataset = Arc::new(FastaDataset::new(path).unwrap());
-    let subsample_size = 25_000;
+    let path = Path::new("/data/abd/silva/silva-SSU-Ref.fasta");
+    let dataset: Arc<dyn Dataset<u8, u64>> = Arc::new(FastaDataset::new(path).unwrap());
 
     let start_time = std::time::Instant::now();
-    let cakes = build_cakes_from_fasta(&fasta_dataset, subsample_size, Some(50), None);
+    // let pool = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+    // let cakes = pool.install(|| Cakes::build_in_batches(
+    //     Arc::clone(&dataset), 
+    //     Some(0.1), 
+    //     Some(50), 
+    //     Some(100),
+    // ));
+    let cakes = Cakes::build_in_batches(
+        Arc::clone(&dataset), 
+        Some(0.8), 
+        Some(50), 
+        Some(100),
+    );
     println!("{:.2e} seconds to create cakes from subset.", start_time.elapsed().as_secs_f64());
 
-    assert_eq!(cakes.root.cardinality, 2 * subsample_size);
+    assert_eq!(cakes.root.cardinality, dataset.cardinality());
 
     println!("cakes diameter: {}", cakes.diameter());
 }
